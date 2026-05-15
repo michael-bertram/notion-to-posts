@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name: Notion to Native Blocks Importer
- * Description: Converts Notion ZIP exports into perfectly clean, native WordPress blocks.
- * Version: 2.5
+ * Description: Converts Notion ZIP exports into clean blocks with Featured Image support.
+ * Version: 2.6
  * Author: Coding Partner
  */
 
@@ -70,7 +70,7 @@ function ntp_handle_upload() {
 }
 
 /**
- * 3. THE "CLEAN-SPACING" NATIVE BLOCK CONVERTER
+ * 3. THE NATIVE BLOCK CONVERTER (With Featured Image Logic)
  */
 function ntp_process_to_clean_blocks($file_path) {
     $html_content = file_get_contents($file_path);
@@ -80,12 +80,11 @@ function ntp_process_to_clean_blocks($file_path) {
     libxml_clear_errors();
 
     $xpath = new DOMXPath($dom);
-    
-    // Targeted query to avoid the "wrapper" traps
     $elements = $xpath->query('//h1 | //h2 | //h3 | //h4 | //p | //ul | //ol | //img | //video | //a[contains(@href, ".mov") or contains(@href, ".mp4")]');
 
     $block_output = '';
     $first_h1_ignored = false;
+    $featured_image_id = null; // Track the first sideloaded image
 
     foreach ($elements as $node) {
         $tag = strtolower($node->nodeName);
@@ -104,6 +103,11 @@ function ntp_process_to_clean_blocks($file_path) {
             if ($is_video || $is_img) {
                 $media = ntp_sideload_media($src, $file_path);
                 if ($media) {
+                    // Set the very first image found as the Featured Image
+                    if ($is_img && $featured_image_id === null) {
+                        $featured_image_id = $media['id'];
+                    }
+
                     if ($is_video) {
                         $block_output .= "\n<figure class=\"wp-block-video\"><video controls src=\"" . $media['url'] . "\"></video></figure>\n\n";
                     } else {
@@ -117,8 +121,6 @@ function ntp_process_to_clean_blocks($file_path) {
         // --- TEXT CONTENT CLEANING ---
         $inner_html = '';
         foreach ($node->childNodes as $child) { $inner_html .= $dom->saveHTML($child); }
-        
-        // Remove all attributes and Notion-specific spans
         $clean_inner = preg_replace('/ (class|style|id|dir|data-[a-z0-9-]+)="[^"]*"| (class|style|id|dir|data-[a-z0-9-]+)=\'[^\']*\'/i', '', $inner_html);
         $clean_inner = preg_replace('/<span[^>]*>|<\/span>/i', '', $clean_inner);
         $clean_inner = str_replace(array("\r", "\n", "\t"), ' ', $clean_inner);
@@ -127,25 +129,20 @@ function ntp_process_to_clean_blocks($file_path) {
 
         if (empty($clean_inner)) continue;
 
-        // --- BLOCK WRAPPING ---
         if (in_array($tag, ['h1', 'h2', 'h3', 'h4'])) {
             $level = substr($tag, 1);
             $block_output .= "\n<h$level>" . strip_tags($clean_inner, '<b><i><strong><em><a><code>') . "</h$level>\n\n";
         } 
         elseif ($tag === 'ul' || $tag === 'ol') {
             $is_ord = ($tag === 'ol') ? ' {"ordered":true}' : '';
-            
-            // SPECIAL FIX FOR LIST GAPS: Strip all tags inside LI except basic formatting
             $list_dom = new DOMDocument();
             @$list_dom->loadHTML(mb_convert_encoding($inner_html, 'HTML-ENTITIES', 'UTF-8'));
             $li_elements = $list_dom->getElementsByTagName('li');
             $processed_li = '';
-            
             foreach ($li_elements as $li) {
                 $li_content = strip_tags($list_dom->saveHTML($li), '<b><i><strong><em><a><code><li>');
                 $processed_li .= trim($li_content);
             }
-
             $block_output .= "\n<$tag>" . $processed_li . "</$tag>\n\n";
         } 
         elseif ($tag === 'p') {
@@ -153,21 +150,25 @@ function ntp_process_to_clean_blocks($file_path) {
         }
     }
 
-    wp_insert_post([
-        'post_title'   => sanitize_text_field(($dom->getElementsByTagName('title')->item(0)) ? $dom->getElementsByTagName('title')->item(0)->nodeValue : basename($file_path, '.html')),
+    $title_node = $dom->getElementsByTagName('title')->item(0);
+    $post_id = wp_insert_post([
+        'post_title'   => sanitize_text_field($title_node ? $title_node->nodeValue : basename($file_path, '.html')),
         'post_content' => trim($block_output),
         'post_status'  => 'draft',
         'post_type'    => 'post'
     ]);
+
+    // SET FEATURED IMAGE
+    if ($post_id && $featured_image_id) {
+        set_post_thumbnail($post_id, $featured_image_id);
+    }
 }
 
 /**
- * 4. MEDIA HANDLER (Cleaned for Notion IDs)
+ * 4. MEDIA HANDLER
  */
 function ntp_sideload_media($src, $file_path) {
     if (empty($src)) return false;
-
-    // Notion URLs often have "attachment:..." or are URL encoded
     $clean_src = preg_replace('/^attachment:[^:]+:/i', '', $src);
     $abs_path = dirname($file_path) . '/' . rawurldecode($clean_src);
 
