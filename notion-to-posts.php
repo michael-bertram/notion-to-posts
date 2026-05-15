@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name: Notion to Native Blocks Importer
- * Description: Converts Notion ZIP exports into clean blocks with Featured Image support.
- * Version: 2.6
+ * Description: Converts Notion ZIP exports into blocks with Featured Image, Category, and Tag support.
+ * Version: 2.7
  * Author: Coding Partner
  */
 
@@ -70,7 +70,7 @@ function ntp_handle_upload() {
 }
 
 /**
- * 3. THE NATIVE BLOCK CONVERTER (With Featured Image Logic)
+ * 3. THE IMPROVED BLOCK CONVERTER
  */
 function ntp_process_to_clean_blocks($file_path) {
     $html_content = file_get_contents($file_path);
@@ -80,11 +80,31 @@ function ntp_process_to_clean_blocks($file_path) {
     libxml_clear_errors();
 
     $xpath = new DOMXPath($dom);
+    
+    // NEW: Extract Categories and Tags from Notion Properties Table
+    $categories = [];
+    $tags = [];
+    $prop_rows = $xpath->query('//table[contains(@class, "properties")]//tr');
+    foreach ($prop_rows as $row) {
+        $th = $xpath->query('.//th', $row)->item(0);
+        $td = $xpath->query('.//td', $row)->item(0);
+        if ($th && $td) {
+            $label = strtolower(trim($th->nodeValue));
+            $values = array_map('trim', explode(',', $td->nodeValue));
+            if ($label === 'category' || $label === 'categories') {
+                $categories = $values;
+            } elseif ($label === 'tags' || $label === 'tag') {
+                $tags = $values;
+            }
+        }
+    }
+
+    // Target content elements
     $elements = $xpath->query('//h1 | //h2 | //h3 | //h4 | //p | //ul | //ol | //img | //video | //a[contains(@href, ".mov") or contains(@href, ".mp4")]');
 
     $block_output = '';
     $first_h1_ignored = false;
-    $featured_image_id = null; // Track the first sideloaded image
+    $featured_image_id = null;
 
     foreach ($elements as $node) {
         $tag = strtolower($node->nodeName);
@@ -103,10 +123,7 @@ function ntp_process_to_clean_blocks($file_path) {
             if ($is_video || $is_img) {
                 $media = ntp_sideload_media($src, $file_path);
                 if ($media) {
-                    // Set the very first image found as the Featured Image
-                    if ($is_img && $featured_image_id === null) {
-                        $featured_image_id = $media['id'];
-                    }
+                    if ($is_img && $featured_image_id === null) $featured_image_id = $media['id'];
 
                     if ($is_video) {
                         $block_output .= "\n<figure class=\"wp-block-video\"><video controls src=\"" . $media['url'] . "\"></video></figure>\n\n";
@@ -118,7 +135,7 @@ function ntp_process_to_clean_blocks($file_path) {
             }
         }
 
-        // --- TEXT CONTENT CLEANING ---
+        // --- TEXT CLEANING ---
         $inner_html = '';
         foreach ($node->childNodes as $child) { $inner_html .= $dom->saveHTML($child); }
         $clean_inner = preg_replace('/ (class|style|id|dir|data-[a-z0-9-]+)="[^"]*"| (class|style|id|dir|data-[a-z0-9-]+)=\'[^\']*\'/i', '', $inner_html);
@@ -158,9 +175,11 @@ function ntp_process_to_clean_blocks($file_path) {
         'post_type'    => 'post'
     ]);
 
-    // SET FEATURED IMAGE
-    if ($post_id && $featured_image_id) {
-        set_post_thumbnail($post_id, $featured_image_id);
+    if ($post_id) {
+        if ($featured_image_id) set_post_thumbnail($post_id, $featured_image_id);
+        // NEW: Apply Categories and Tags
+        if (!empty($categories)) wp_set_object_terms($post_id, $categories, 'category');
+        if (!empty($tags)) wp_set_object_terms($post_id, $tags, 'post_tag');
     }
 }
 
