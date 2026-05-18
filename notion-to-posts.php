@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name: Notion to Native Blocks Importer
- * Description: Converts Notion ZIPs into clean native blocks with absolute global-level structural extraction.
- * Version: 5.9
+ * Description: Converts Notion ZIPs into clean native blocks. Safely strips duplicate macOS metadata files.
+ * Version: 6.0
  * Author: Coding Partner
  */
 
@@ -129,6 +129,10 @@ function ntp_handle_upload() {
 
         foreach ($items as $item) {
             if ($item === '.' || $item === '..') continue;
+            
+            // CRITICAL SYSTEM FILE FILTER: Skip macOS hidden structural metadata files completely
+            if (strpos($item, '._') === 0) continue;
+
             $full_path = $current_dir . '/' . $item;
 
             if (is_dir($full_path)) {
@@ -173,7 +177,7 @@ function ntp_process_to_clean_blocks($file_path) {
     $raw_title = $title_node ? $title_node->nodeValue : basename($file_path, '.html');
     $clean_title = trim(preg_replace('/[a-f0-9]{32}/i', '', $raw_title));
 
-    // 2. Erase the Properties Table upfront so it doesn't pollute the text scrape
+    // 2. Erase the Properties Table upfront
     $properties_tables = $xpath->query('//table[contains(@class, "properties")]');
     foreach ($properties_tables as $tbl) {
         $tbl->parentNode->removeChild($tbl);
@@ -222,31 +226,25 @@ function ntp_process_to_clean_blocks($file_path) {
         }
     }
 
-    // 5. CRITICAL FIX: GLOBAL LEVEL SEARCH (`//body//...`)
-    // By searching globally inside body, parent wrappers and container div elements are ignored.
+    // 5. Global Search Collection
     $content_blocks = $xpath->query('//body//h1 | //body//h2 | //body//h3 | //body//h4 | //body//p | //body//ul | //body//ol | //body//blockquote | //body//pre | //body//figure');
     
     $block_output = '';
     $first_h1_ignored = false;
 
     foreach ($content_blocks as $block) {
-        // Prevent parsing sub-items inside items to avoid duplication loops
         if ($xpath->query('ancestor::h1 | ancestor::h2 | ancestor::h3 | ancestor::h4 | ancestor::p | ancestor::ul | ancestor::ol | ancestor::blockquote | ancestor::pre', $block)->length > 0) {
             continue;
         }
 
         $tag = strtolower($block->nodeName);
-        
-        // Skip default page header title block
         if ($tag === 'h1' && !$first_h1_ignored && trim($block->textContent) === $raw_title) {
             $first_h1_ignored = true;
             continue;
         }
 
         $inner_html = '';
-        foreach ($block->childNodes as $child) { 
-            $inner_html .= $dom->saveHTML($child); 
-        }
+        foreach ($block->childNodes as $child) { $inner_html .= $dom->saveHTML($child); }
 
         $clean_inner = preg_replace("/ (class|style|id|dir|data-[a-z0-9-]+)=\"[^\"]*\"| (class|style|id|dir|data-[a-z0-9-]+)='[^']*'/i", "", $inner_html);
         $clean_inner = preg_replace('/<span[^>]*>|<\/span>/i', '', $clean_inner);
@@ -304,7 +302,7 @@ function ntp_process_to_clean_blocks($file_path) {
 
     $current_user_id = get_current_user_id() ? get_current_user_id() : 1;
 
-    // Delete existing trash/draft matches to avoid collision buildup
+    // Wipe out old matching titles automatically on re-upload to keep directory fresh
     $existing_post = get_page_by_title($clean_title, OBJECT, 'post');
     if ($existing_post) {
         wp_delete_post($existing_post->ID, true);
