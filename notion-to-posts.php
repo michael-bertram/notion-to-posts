@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name: Notion to Native Blocks Importer
- * Description: Converts Notion ZIPs into clean native blocks with dashboard options and code language auto-detection.
- * Version: 8.1
+ * Description: Advanced 4-level cross-ZIP relational migration engine for Courses, Curriculums, Content Lessons, and Tasks.
+ * Version: 9.5
  * Author: Coding Partner
  */
 
@@ -30,13 +30,14 @@ function ntp_intercept_form_submission() {
         'taxonomy_mode' => isset($_POST['ntp_tax_mode']) ? sanitize_text_field($_POST['ntp_tax_mode']) : 'tags',
         'skip_media'    => isset($_POST['ntp_skip_media']) ? true : false,
         'clean_titles'  => isset($_POST['ntp_clean_titles']) ? true : false,
+        'migration_level'=> isset($_POST['ntp_migration_level']) ? sanitize_text_field($_POST['ntp_migration_level']) : 'courses',
     ];
 
     ntp_handle_upload($options);
 }
 
 /**
- * 2. ADMIN MENU SETUP & STYLING
+ * 2. ADMIN MENU SETUP & STYLING (WITH 4-LEVEL HIERARCHY UI)
  */
 add_action('admin_menu', 'ntp_add_admin_menu');
 function ntp_add_admin_menu() {
@@ -45,38 +46,63 @@ function ntp_add_admin_menu() {
 
 function ntp_plugin_page() {
     $max_upload = ini_get('upload_max_filesize');
+    $ledger = get_option('_ntp_relational_ledger', []);
+    $mapped_count = count($ledger);
     
     if (get_transient('ntp_success_message')) {
         echo '<div class="notice notice-success is-dismissible" style="margin-top:20px;"><p>' . esc_html(get_transient('ntp_success_message')) . '</p></div>';
         delete_transient('ntp_success_message');
     }
     ?>
-    <div class="wrap notion-importer-wrap" style="max-width: 900px; margin-top: 20px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen-Sans, Ubuntu, Cantarell, 'Helvetica Neue', sans-serif;">
-        <h1 style="font-weight: 700; font-size: 28px; margin-bottom: 20px;">Notion Content Migration</h1>
+    <div class="wrap notion-importer-wrap" style="max-width: 950px; margin-top: 20px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen-Sans, Ubuntu, Cantarell, 'Helvetica Neue', sans-serif;">
+        <h1 style="font-weight: 700; font-size: 28px; margin-bottom: 20px;">Notion Content Migration Engine</h1>
         <hr class="wp-header-end">
+
+        <div style="background: #fff; border-left: 4px solid #46b450; box-shadow: 0 1px 3px rgba(0,0,0,0.1); padding: 15px 20px; border-radius: 4px; margin: 20px 0; display: flex; align-items: center; justify-content: space-between;">
+            <div>
+                <span class="dashicons dashicons-networking" style="color: #46b450; margin-right: 8px; vertical-align: text-bottom;"></span>
+                <strong>Relational Mapping Ledger:</strong> <span style="background:#e7f5ec; color:#2e7d32; padding:2px 8px; border-radius:10px; font-weight:600; font-size:12px;"><?php echo $mapped_count; ?> Nodes Indexed</span> Across Database Runs.
+            </div>
+            <form method="post" action="<?php echo admin_url('admin-post.php'); ?>" style="margin:0;" onsubmit="return confirm('Clear the mapping ledger? This breaks cross-ZIP relationship building for future uploads.');">
+                <input type="hidden" name="action" value="ntp_clear_ledger'); ?>">
+                <input type="hidden" name="action" value="ntp_clear_ledger">
+                <?php wp_nonce_field('ntp_ledger_clear_action', 'ntp_ledger_nonce'); ?>
+                <input type="submit" class="button button-link-delete" value="Clear Ledger Map" style="color:#d63638; text-decoration:none; font-size:12px;">
+            </form>
+        </div>
 
         <form method="post" action="<?php echo admin_url('admin-post.php'); ?>" enctype="multipart/form-data" id="notion-import-form">
             <input type="hidden" name="action" value="execute_notion_import">
             <?php wp_nonce_field('ntp_upload_action', 'ntp_nonce'); ?>
 
-            <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 20px; margin-top: 20px;">
+            <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 20px;">
                 
                 <div style="background: #fff; border: 1px solid #dcdcde; border-radius: 4px; box-shadow: 0 1px 2px rgba(0,0,0,0.05); padding: 25px; display: flex; flex-direction: column; justify-content: space-between;">
                     <div>
                         <h2 style="font-size: 18px; font-weight: 600; margin-top: 0; margin-bottom: 15px; padding-bottom: 10px; border-bottom: 1px solid #f0f0f1;">
-                            <span class="dashicons dashicons-cloud-upload" style="margin-right: 6px; vertical-align: text-bottom;"></span> 1. Upload
+                            <span class="dashicons dashicons-cloud-upload" style="margin-right: 6px; vertical-align: text-bottom;"></span> 1. Select Database ZIP
                         </h2>
-                        <p style="color: #646970; margin-bottom: 20px;">Select your exported Notion database or workspace ZIP archive file to compile directly into posts.</p>
                         
-                        <div style="background: #f8f9fa; border: 2px dashed #c3c4c7; padding: 40px 20px; text-align: center; border-radius: 4px; margin-bottom: 25px;">
+                        <div style="background: #f0f6fc; border: 1px solid #c8d7e1; padding: 15px; border-radius: 4px; margin-bottom: 20px;">
+                            <label style="display: block; font-weight: 700; margin-bottom: 8px; color: #1d2327;">Current Migration Batch Target:</label>
+                            <select name="ntp_migration_level" style="width: 100%; height: 38px; font-weight: 600; border-color: #2271b1;">
+                                <option value="courses" selected>Level 1: Courses / Modules (Runs 1st)</option>
+                                <option value="curriculum">Level 2: Curriculum / Topics (Connects to Courses)</option>
+                                <option value="content">Level 3: Content / Lessons (Connects to Curriculum)</option>
+                                <option value="tasks">Level 4: Tasks / Sub-tasks (Connects to Lessons)</option>
+                            </select>
+                            <p style="font-size: 11px; color: #646970; margin-top: 6px; margin-bottom: 0;">Match this option to the specific level of your structural learning hierarchy inside your ZIP package.</p>
+                        </div>
+
+                        <div style="background: #f8f9fa; border: 2px dashed #c3c4c7; padding: 30px 20px; text-align: center; border-radius: 4px; margin-bottom: 10px;">
                             <input type="file" name="notion_zip" accept=".zip" required style="font-size: 14px;">
                         </div>
                     </div>
 
-                    <div style="display: flex; align-items: center; gap: 15px; padding-top: 20px; border-top: 1px solid #f0f0f1;">
-                        <input type="submit" name="ntp_submit" id="submit-btn" class="button button-primary button-large" value="Execute Import Pipeline" style="height: 40px; padding: 0 25px; font-weight: 600;">
+                    <div style="display: flex; align-items: center; gap: 15px; padding-top: 20px; border-top: 1px solid #f0f0f1; margin-top: 20px;">
+                        <input type="submit" name="ntp_submit" id="submit-btn" class="button button-primary button-large" value="Execute Relational Compilation" style="height: 40px; padding: 0 25px; font-weight: 600;">
                         <div id="notion-spinner" style="display: none; align-items: center; gap: 8px; color: #2271b1; font-weight: 500;">
-                            <span class="spinner is-active" style="float: none; margin: 0;"></span> Compiling Components...
+                            <span class="spinner is-active" style="float: none; margin: 0;"></span> Processing Relations...
                         </div>
                     </div>
                 </div>
@@ -105,6 +131,12 @@ function ntp_plugin_page() {
 
                     <hr style="border: 0; border-top: 1px solid #f0f0f1; margin: 20px 0;">
 
+                    <div style="margin-bottom: 15px;">
+                        <label style="display: flex; align-items: center; gap: 8px; font-weight: 500; color: #3c434a; cursor: pointer;">
+                            <input type="checkbox" name="ntp_clean_titles" value="1" checked style="margin: 0;">
+                            Strip Notion ID Hashes from Titles
+                        </label>
+                    </div>
 
                     <div style="margin-bottom: 15px;">
                         <label style="display: flex; align-items: center; gap: 8px; font-weight: 500; color: #3c434a; cursor: pointer;">
@@ -125,6 +157,17 @@ function ntp_plugin_page() {
         });
     </script>
     <?php
+}
+
+/**
+ * RELATIONAL LEDGER RESET ROUTER
+ */
+add_action('admin_post_ntp_clear_ledger', 'ntp_reset_ledger_map');
+function ntp_reset_ledger_map() {
+    if (!isset($_POST['ntp_ledger_nonce']) || !wp_verify_nonce($_POST['ntp_ledger_nonce'], 'ntp_ledger_clear_action')) wp_die('Security error.');
+    update_option('_ntp_relational_ledger', []);
+    wp_redirect(admin_url('admin.php?page=notion-importer'));
+    exit;
 }
 
 /**
@@ -163,15 +206,19 @@ function ntp_handle_upload($options) {
                 $directory_queue[] = $full_path;
             } elseif (is_file($full_path) && pathinfo($full_path, PATHINFO_EXTENSION) === 'html') {
                 $filename_only = strtolower($item);
-                if (in_array($filename_only, ['index.html', 'sitemap.html']) || (strpos($filename_only, 'tasks') !== false && !strpos($filename_only, 'navigation'))) {
-                    continue;
-                }
+                
+                // Allow tracking of structural files based on level selection
+                if (in_array($filename_only, ['index.html', 'sitemap.html'])) continue;
+                if (strpos($filename_only, 'tasks') !== false && !strpos($filename_only, 'navigation') && $options['migration_level'] !== 'tasks') continue;
+                if (strpos($filename_only, 'content') !== false && $options['migration_level'] !== 'content') continue;
+                if (strpos($filename_only, 'curriculum') !== false && $options['migration_level'] !== 'curriculum') continue;
+
                 $html_files_to_process[] = $full_path;
             }
         }
     }
 
-    if (empty($html_files_to_process)) wp_die("Diagnostic Check Notice: 0 HTML files found.");
+    if (empty($html_files_to_process)) wp_die("Diagnostic Check Notice: 0 matching structural HTML files found for this migration level selection.");
 
     $count = 0;
     foreach ($html_files_to_process as $file_path) {
@@ -179,13 +226,13 @@ function ntp_handle_upload($options) {
         $count++;
     }
     
-    set_transient('ntp_success_message', "Migration Complete! Successfully added $count posts into the database.");
+    set_transient('ntp_success_message', "Pipeline Complete! Synthesized $count hierarchy elements into the relational network.");
     wp_redirect(admin_url('admin.php?page=notion-importer'));
     exit;
 }
 
 /**
- * 4. THE MASTER RUNTIME PARSER
+ * 4. THE INTER-CONNECTED RELATIONAL PARSER
  */
 function ntp_process_to_clean_blocks($file_path, $options) {
     $html_content = file_get_contents($file_path);
@@ -205,32 +252,32 @@ function ntp_process_to_clean_blocks($file_path, $options) {
         $clean_title = trim($raw_title);
     }
 
+    // Extract Property Relation links before deleting properties block
+    $relation_notion_keys = [];
+    $property_anchors = $xpath->query('//table[contains(@class, "properties")]//a');
+    foreach ($property_anchors as $anchor) {
+        $href = $anchor->getAttribute('href');
+        if (!empty($href) && strpos($href, '.html') !== false) {
+            $relation_notion_keys[] = rawurldecode(basename($href));
+        }
+    }
+
     // Erase the Properties Table upfront
     $properties_tables = $xpath->query('//table[contains(@class, "properties")]');
     foreach ($properties_tables as $tbl) {
         $tbl->parentNode->removeChild($tbl);
     }
 
-    // Contextual Mapping Scraper
+    // Contextual Tag Matrix Map Rules
     $full_body_text = strtolower($dom->textContent);
     $modules_found = [];
     $categories = ['Specific'];
     
-    if (strpos($full_body_text, 'flexbox') !== false || strpos($full_body_text, 'sidebar layout') !== false || strpos($full_body_text, 'card') !== false || strpos($full_body_text, 'clip-path') !== false) {
-        $modules_found[] = 'Flexbox';
-    }
-    if (strpos($full_body_text, 'php') !== false || strpos($full_body_text, 'syntax') !== false || strpos($full_body_text, 'variables') !== false || strpos($full_body_text, 'conditionals') !== false || strpos($full_body_text, 'loops') !== false || strpos($full_body_text, 'arrays') !== false || strpos($full_body_text, 'functions') !== false || strpos($full_body_text, 'sql') !== false || strpos($full_body_text, 'superglobals') !== false) {
-        $modules_found[] = 'PHP';
-    }
-    if (strpos($full_body_text, 'animation') !== false || strpos($full_body_text, 'animated') !== false || strpos($full_body_text, 'hover') !== false || strpos($full_body_text, 'transition') !== false) {
-        $modules_found[] = 'Advanced Animation';
-    }
-    if (strpos($full_body_text, 'popover') !== false) {
-        $modules_found[] = 'Popover API';
-    }
-    if (strpos($full_body_text, 'nav') !== false || strpos($full_body_text, 'navigation') !== false || strpos($full_body_text, 'menu') !== false || strpos($full_body_text, 'sliding nav') !== false) {
-        $modules_found[] = 'Navigation';
-    }
+    if (strpos($full_body_text, 'flexbox') !== false || strpos($full_body_text, 'sidebar layout') !== false || strpos($full_body_text, 'card') !== false || strpos($full_body_text, 'clip-path') !== false) $modules_found[] = 'Flexbox';
+    if (strpos($full_body_text, 'php') !== false || strpos($full_body_text, 'syntax') !== false || strpos($full_body_text, 'variables') !== false || strpos($full_body_text, 'conditionals') !== false || strpos($full_body_text, 'loops') !== false || strpos($full_body_text, 'arrays') !== false || strpos($full_body_text, 'functions') !== false || strpos($full_body_text, 'sql') !== false || strpos($full_body_text, 'superglobals') !== false) $modules_found[] = 'PHP';
+    if (strpos($full_body_text, 'animation') !== false || strpos($full_body_text, 'animated') !== false || strpos($full_body_text, 'hover') !== false || strpos($full_body_text, 'transition') !== false) $modules_found[] = 'Advanced Animation';
+    if (strpos($full_body_text, 'popover') !== false) $modules_found[] = 'Popover API';
+    if (strpos($full_body_text, 'nav') !== false || strpos($full_body_text, 'navigation') !== false || strpos($full_body_text, 'menu') !== false || strpos($full_body_text, 'sliding nav') !== false) $modules_found[] = 'Navigation';
 
     $wp_tags = []; $wp_cats = $categories;
     if ($options['taxonomy_mode'] === 'tags') { $wp_tags = $modules_found; }
@@ -254,17 +301,14 @@ function ntp_process_to_clean_blocks($file_path, $options) {
         }
     }
 
-    // Global structural extraction (Callout wrapper groups removed)
+    // Global Block Layout Builder
     $content_blocks = $xpath->query('//body//h1 | //body//h2 | //body//h3 | //body//h4 | //body//p | //body//ul | //body//ol | //body//blockquote | //body//pre | //body//figure');
     
     $block_output = '';
     $first_h1_ignored = false;
 
     foreach ($content_blocks as $block) {
-        // Prevent duplicate sub-nodes processing
-        if ($xpath->query('ancestor::h1 | ancestor::h2 | ancestor::h3 | ancestor::h4 | ancestor::p | ancestor::ul | ancestor::ol | ancestor::blockquote | ancestor::pre', $block)->length > 0) {
-            continue;
-        }
+        if ($xpath->query('ancestor::h1 | ancestor::h2 | ancestor::h3 | ancestor::h4 | ancestor::p | ancestor::ul | ancestor::ol | ancestor::blockquote | ancestor::pre', $block)->length > 0) continue;
 
         $tag = strtolower($block->nodeName);
         if ($tag === 'h1' && !$first_h1_ignored && trim($block->textContent) === $raw_title) {
@@ -289,10 +333,9 @@ function ntp_process_to_clean_blocks($file_path, $options) {
                 $block_output .= "\n<h$level>" . strip_tags($clean_inner, '<b><i><strong><em><a><code>') . "</h$level>\n\n";
                 break;
             case 'blockquote':
-                $block_output .= "\n<blockquote class=\"wp-block-quote\"><p>" . strip_tags($clean_inner, '<b><i><strong><em><a>') . "</p></blockquote>\n\n";
+                $block_output .= "\n<blockquote class=\"wp-block-quote\"><p>" . strip_tags($clean_inner, '<b><i>Original_File.html') . "</p></blockquote>\n\n";
                 break;
             case 'pre':
-                // AUTO CODE LANGUAGE DETECTOR (Kept active!)
                 $code_content = strip_tags($inner_html);
                 $lang = 'code'; 
                 if (strpos($code_content, '<?php') !== false || strpos($code_content, 'wp_') !== false) { $lang = 'php'; }
@@ -319,41 +362,61 @@ function ntp_process_to_clean_blocks($file_path, $options) {
                 if (strpos($inner_html, '<video') !== false || strpos($inner_html, '.mov') !== false || strpos($inner_html, '.mp4') !== false) {
                     preg_match('/(src|href)="([^"]+)"/i', $inner_html, $video_match);
                     $v_url = isset($video_match[2]) ? $video_match[2] : '';
-                    if (!empty($v_url)) {
-                        $block_output .= "\n<figure class=\"wp-block-video\"><video controls src=\"" . esc_url($v_url) . "\"></video></figure>\n\n";
-                    }
+                    if (!empty($v_url)) $block_output .= "\n<figure class=\"wp-block-video\"><video controls src=\"" . esc_url($v_url) . "\"></video></figure>\n\n";
                 } elseif (strpos($inner_html, '<img') !== false) {
                     preg_match('/src="([^"]+)"/i', $inner_html, $img_match);
                     $i_url = isset($img_match[1]) ? $img_match[1] : '';
-                    if (!empty($i_url)) {
-                        $block_output .= "\n<figure class=\"wp-block-image size-full\"><img src=\"" . esc_url($i_url) . "\" alt=\"\"/></figure>\n\n";
-                    }
+                    if (!empty($i_url)) $block_output .= "\n<figure class=\"wp-block-image size-full\"><img src=\"" . esc_url($i_url) . "\" alt=\"\"/></figure>\n\n";
                 }
                 break;
         }
     }
 
-    if (empty(trim($block_output))) {
-        $block_output = "\n<p>Workspace content compiled successfully.</p>\n";
+    if (empty(trim($block_output))) $block_output = "\n<p>Workspace content compiled successfully.</p>\n";
+
+    // --- INFINITE ANCESTRAL LEDGER LOOKUP ---
+    $ledger = get_option('_ntp_relational_ledger', []);
+    $target_parent_id = 0;
+
+    if ($options['migration_level'] !== 'courses' && !empty($relation_notion_keys)) {
+        foreach ($relation_notion_keys as $relation_key) {
+            if (isset($ledger[$relation_key])) {
+                $target_parent_id = intval($ledger[$relation_key]);
+                break; 
+            }
+        }
     }
 
     $current_user_id = get_current_user_id() ? get_current_user_id() : 1;
 
     $existing_post = get_page_by_title($clean_title, OBJECT, 'post');
-    if ($existing_post) { wp_delete_post($existing_post->ID, true); }
+    if ($existing_post) wp_delete_post($existing_post->ID, true);
 
-    $post_id = wp_insert_post([
+    $post_args = [
         'post_title'   => sanitize_text_field($clean_title),
         'post_content' => $block_output,
         'post_status'  => $options['post_status'],
         'post_type'    => 'post',
-        'post_author'  => $current_user_id
-    ]);
+        'post_author'  => $current_user_id,
+    ];
+
+    // Nest under the found parent post ID natively
+    if ($target_parent_id > 0) {
+        $post_args['post_parent'] = $target_parent_id;
+    }
+
+    $post_id = wp_insert_post($post_args);
 
     if ($post_id) {
         if ($featured_image_id) set_post_thumbnail($post_id, $featured_image_id);
         if (!empty($wp_cats)) wp_set_object_terms($post_id, $wp_cats, 'category');
         if (!empty($wp_tags)) wp_set_object_terms($post_id, $wp_tags, 'post_tag');
+
+        // Map both clean and raw filename references into ledger cache
+        $original_filename_key = basename($file_path);
+        $ledger[$original_filename_key] = $post_id;
+        $ledger[rawurlencode($original_filename_key)] = $post_id;
+        update_option('_ntp_relational_ledger', $ledger);
     }
 }
 
