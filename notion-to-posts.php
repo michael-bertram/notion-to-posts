@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name: Notion to Native Blocks Importer
- * Description: Converts Notion ZIP exports into blocks with Featured Image, Category, and Tag support.
- * Version: 2.7
+ * Description: Converts Notion ZIPs into clean native blocks with precise keyword taxonomy mapping.
+ * Version: 3.8
  * Author: Coding Partner
  */
 
@@ -36,7 +36,7 @@ function ntp_plugin_page() {
 }
 
 /**
- * 2. ZIP EXTRACTION & FILE LOOP
+ * 2. ZIP EXTRACTION
  */
 function ntp_handle_upload() {
     set_time_limit(600);
@@ -62,6 +62,9 @@ function ntp_handle_upload() {
     $count = 0;
     foreach ($files as $file) {
         if ($file->isFile() && $file->getExtension() === 'html') {
+            $filename = strtolower($file->getFilename());
+            if (in_array($filename, ['index.html', 'sitemap.html']) || strpos($filename, 'tasks') !== false) continue;
+            
             ntp_process_to_clean_blocks($file->getPathname());
             $count++;
         }
@@ -70,7 +73,7 @@ function ntp_handle_upload() {
 }
 
 /**
- * 3. THE IMPROVED BLOCK CONVERTER
+ * 3. THE MASTER BLOCK CONVERTER
  */
 function ntp_process_to_clean_blocks($file_path) {
     $html_content = file_get_contents($file_path);
@@ -81,26 +84,36 @@ function ntp_process_to_clean_blocks($file_path) {
 
     $xpath = new DOMXPath($dom);
     
-    // NEW: Extract Categories and Tags from Notion Properties Table
-    $categories = [];
+    // Get the title tag text cleanly
+    $title_node = $dom->getElementsByTagName('title')->item(0);
+    $raw_title = $title_node ? $title_node->nodeValue : basename($file_path, '.html');
+    $clean_title = trim(preg_replace('/[a-f0-9]{32}/i', '', $raw_title));
+
+    // --- SMART TAXONOMY CONTEXT FINDER ---
     $tags = [];
-    $prop_rows = $xpath->query('//table[contains(@class, "properties")]//tr');
-    foreach ($prop_rows as $row) {
-        $th = $xpath->query('.//th', $row)->item(0);
-        $td = $xpath->query('.//td', $row)->item(0);
-        if ($th && $td) {
-            $label = strtolower(trim($th->nodeValue));
-            $values = array_map('trim', explode(',', $td->nodeValue));
-            if ($label === 'category' || $label === 'categories') {
-                $categories = $values;
-            } elseif ($label === 'tags' || $label === 'tag') {
-                $tags = $values;
-            }
-        }
+    $categories = ['Specific']; // Match default categories
+    
+    $full_body_text = strtolower($dom->textContent);
+    
+    // Precise taxonomy rules matching your database screenshot
+    if (strpos($full_body_text, 'flexbox') !== false || strpos($full_body_text, 'sidebar layout') !== false) {
+        $tags[] = 'Flexbox';
+    }
+    if (strpos($full_body_text, 'php') !== false || strpos($full_body_text, 'syntax') !== false || strpos($full_body_text, 'variables') !== false || strpos($full_body_text, 'conditionals') !== false || strpos($full_body_text, 'loops') !== false || strpos($full_body_text, 'arrays') !== false || strpos($full_body_text, 'functions') !== false) {
+        $tags[] = 'PHP';
+    }
+    if (strpos($full_body_text, 'animation') !== false || strpos($full_body_text, 'animated') !== false) {
+        $tags[] = 'Advanced Animation';
+    }
+    if (strpos($full_body_text, 'popover') !== false) {
+        $tags[] = 'Popover API';
+    }
+    if (strpos($full_body_text, 'nav') !== false || strpos($full_body_text, 'navigation') !== false) {
+        $tags[] = 'Navigation';
     }
 
-    // Target content elements
-    $elements = $xpath->query('//h1 | //h2 | //h3 | //h4 | //p | //ul | //ol | //img | //video | //a[contains(@href, ".mov") or contains(@href, ".mp4")]');
+    // --- BLOCK PARSING ---
+    $elements = $xpath->query('//h1 | //h2 | //h3 | //h4 | //p | //ul | //ol | //img | //video | //blockquote | //pre | //a[contains(@href, ".mov") or contains(@href, ".mp4")]');
 
     $block_output = '';
     $first_h1_ignored = false;
@@ -108,68 +121,63 @@ function ntp_process_to_clean_blocks($file_path) {
 
     foreach ($elements as $node) {
         $tag = strtolower($node->nodeName);
-        
-        if ($tag === 'h1' && !$first_h1_ignored) {
-            $first_h1_ignored = true;
-            continue;
-        }
+        if ($tag === 'h1' && !$first_h1_ignored) { $first_h1_ignored = true; continue; }
 
-        // --- MEDIA HANDLING ---
         $src = $node->getAttribute('src') ?: $node->getAttribute('href');
         if (in_array($tag, ['img', 'video', 'a']) && !empty($src)) {
-            $is_video = preg_match('/\.(mp4|mov|webm)$/i', $src);
-            $is_img = preg_match('/\.(jpg|jpeg|png|gif|webp)$/i', $src) || $tag === 'img';
-
-            if ($is_video || $is_img) {
-                $media = ntp_sideload_media($src, $file_path);
-                if ($media) {
-                    if ($is_img && $featured_image_id === null) $featured_image_id = $media['id'];
-
-                    if ($is_video) {
-                        $block_output .= "\n<figure class=\"wp-block-video\"><video controls src=\"" . $media['url'] . "\"></video></figure>\n\n";
-                    } else {
-                        $block_output .= "\n<figure class=\"wp-block-image size-full\"><img src=\"" . $media['url'] . "\" alt=\"\" class=\"wp-image-" . $media['id'] . "\"/></figure>\n\n";
-                    }
-                    continue;
+            $media = ntp_sideload_media($src, $file_path);
+            if ($media) {
+                if (preg_match('/\.(jpg|jpeg|png|gif|webp)$/i', $src) && $featured_image_id === null) $featured_image_id = $media['id'];
+                if (preg_match('/\.(mp4|mov|webm)$/i', $src)) {
+                    $block_output .= "\n<figure class=\"wp-block-video\"><video controls src=\"" . $media['url'] . "\"></video></figure>\n\n";
+                } else {
+                    $block_output .= "\n<figure class=\"wp-block-image size-full\"><img src=\"" . $media['url'] . "\" alt=\"\" class=\"wp-image-" . $media['id'] . "\"/></figure>\n\n";
                 }
+                continue;
             }
         }
 
-        // --- TEXT CLEANING ---
         $inner_html = '';
         foreach ($node->childNodes as $child) { $inner_html .= $dom->saveHTML($child); }
+        
+        // FIXED LINE 142: Clean HTML attributes safely without colliding string quotes
         $clean_inner = preg_replace('/ (class|style|id|dir|data-[a-z0-9-]+)="[^"]*"| (class|style|id|dir|data-[a-z0-9-]+)=\'[^\']*\'/i', '', $inner_html);
         $clean_inner = preg_replace('/<span[^>]*>|<\/span>/i', '', $clean_inner);
         $clean_inner = str_replace(array("\r", "\n", "\t"), ' ', $clean_inner);
         $clean_inner = preg_replace('/\s+/', ' ', $clean_inner);
         $clean_inner = trim($clean_inner);
 
-        if (empty($clean_inner)) continue;
+        if (empty($clean_inner) && !in_array($tag, ['pre'])) continue;
 
-        if (in_array($tag, ['h1', 'h2', 'h3', 'h4'])) {
-            $level = substr($tag, 1);
-            $block_output .= "\n<h$level>" . strip_tags($clean_inner, '<b><i><strong><em><a><code>') . "</h$level>\n\n";
-        } 
-        elseif ($tag === 'ul' || $tag === 'ol') {
-            $is_ord = ($tag === 'ol') ? ' {"ordered":true}' : '';
-            $list_dom = new DOMDocument();
-            @$list_dom->loadHTML(mb_convert_encoding($inner_html, 'HTML-ENTITIES', 'UTF-8'));
-            $li_elements = $list_dom->getElementsByTagName('li');
-            $processed_li = '';
-            foreach ($li_elements as $li) {
-                $li_content = strip_tags($list_dom->saveHTML($li), '<b><i><strong><em><a><code><li>');
-                $processed_li .= trim($li_content);
-            }
-            $block_output .= "\n<$tag>" . $processed_li . "</$tag>\n\n";
-        } 
-        elseif ($tag === 'p') {
-            $block_output .= "\n<p>$clean_inner</p>\n\n";
+        switch($tag) {
+            case 'h1': case 'h2': case 'h3': case 'h4':
+                $level = substr($tag, 1);
+                $block_output .= "\n<h$level>" . strip_tags($clean_inner, '<b><i><strong><em><a><code>') . "</h$level>\n\n";
+                break;
+            case 'blockquote':
+                $block_output .= "\n<blockquote class=\"wp-block-quote\"><p>" . strip_tags($clean_inner, '<b><i>strong<em><a>') . "</p></blockquote>\n\n";
+                break;
+            case 'pre':
+                $block_output .= "\n<pre class=\"wp-block-code\"><code>" . htmlspecialchars(strip_tags($inner_html)) . "</code></pre>\n\n";
+                break;
+            case 'ul': case 'ol':
+                $is_ord = ($tag === 'ol') ? ' {"ordered":true}' : '';
+                $list_dom = new DOMDocument();
+                @$list_dom->loadHTML(mb_convert_encoding($inner_html, 'HTML-ENTITIES', 'UTF-8'));
+                $processed_li = '';
+                foreach ($list_dom->getElementsByTagName('li') as $li) {
+                    $processed_li .= '<li>' . trim(strip_tags($list_dom->saveHTML($li), '<b><i><strong><em><a><code>')) . '</li>';
+                }
+                $block_output .= "\n<$tag>$processed_li</$tag>\n\n";
+                break;
+            case 'p':
+                $block_output .= "\n<p>$clean_inner</p>\n\n";
+                break;
         }
     }
 
-    $title_node = $dom->getElementsByTagName('title')->item(0);
     $post_id = wp_insert_post([
-        'post_title'   => sanitize_text_field($title_node ? $title_node->nodeValue : basename($file_path, '.html')),
+        'post_title'   => sanitize_text_field($clean_title),
         'post_content' => trim($block_output),
         'post_status'  => 'draft',
         'post_type'    => 'post'
@@ -177,7 +185,6 @@ function ntp_process_to_clean_blocks($file_path) {
 
     if ($post_id) {
         if ($featured_image_id) set_post_thumbnail($post_id, $featured_image_id);
-        // NEW: Apply Categories and Tags
         if (!empty($categories)) wp_set_object_terms($post_id, $categories, 'category');
         if (!empty($tags)) wp_set_object_terms($post_id, $tags, 'post_tag');
     }
@@ -190,15 +197,10 @@ function ntp_sideload_media($src, $file_path) {
     if (empty($src)) return false;
     $clean_src = preg_replace('/^attachment:[^:]+:/i', '', $src);
     $abs_path = dirname($file_path) . '/' . rawurldecode($clean_src);
-
     if (!file_exists($abs_path)) return false;
-
     require_once(ABSPATH . 'wp-admin/includes/media.php');
     require_once(ABSPATH . 'wp-admin/includes/file.php');
     require_once(ABSPATH . 'wp-admin/includes/image.php');
-
     $id = media_handle_sideload(['name' => basename($abs_path), 'tmp_name' => $abs_path], 0);
-    if (is_wp_error($id)) return false;
-
-    return ['id' => $id, 'url' => wp_get_attachment_url($id)];
+    return is_wp_error($id) ? false : ['id' => $id, 'url' => wp_get_attachment_url($id)];
 }
