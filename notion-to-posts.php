@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name: Notion to Native Blocks Importer
- * Description: Advanced 4-level cross-ZIP relational migration engine for Courses, Curriculums, Content Lessons, and Tasks.
- * Version: 9.5
+ * Description: Advanced 4-level cross-ZIP migration engine with dynamic linked database view extraction and link repair.
+ * Version: 10.1
  * Author: Coding Partner
  */
 
@@ -37,7 +37,75 @@ function ntp_intercept_form_submission() {
 }
 
 /**
- * 2. ADMIN MENU SETUP & STYLING (WITH 4-LEVEL HIERARCHY UI)
+ * GLOBAL POST-IMPORT RE-LINKER ACTION
+ */
+add_action('admin_post_ntp_execute_relink', 'ntp_handle_global_relink');
+function ntp_handle_global_relink() {
+    if (!isset($_POST['ntp_relink_nonce']) || !wp_verify_nonce($_POST['ntp_relink_nonce'], 'ntp_relink_action')) {
+        wp_die('Security error.');
+    }
+
+    $ledger = get_option('_ntp_relational_ledger', []);
+    if (empty($ledger)) {
+        set_transient('ntp_success_message', 'Link Repair Aborted: Relational ledger is empty.');
+        wp_redirect(admin_url('admin.php?page=notion-importer'));
+        exit;
+    }
+
+    $link_map = [];
+    foreach ($ledger as $notion_file => $wp_post_id) {
+        $permalink = get_permalink($wp_post_id);
+        if ($permalink) {
+            $link_map[$notion_file] = $permalink;
+            $link_map[rawurlencode($notion_file)] = $permalink;
+        }
+    }
+
+    $all_posts = get_posts([
+        'post_type'      => 'post',
+        'post_status'    => ['any'],
+        'posts_per_page' => -1
+    ]);
+
+    $relink_count = 0;
+
+    foreach ($all_posts as $p) {
+        $content = $p->post_content;
+        $updated = false;
+
+        foreach ($link_map as $notion_file => $wp_permalink) {
+            if (strpos($content, $notion_file) !== false) {
+                $content = str_replace($notion_file, $wp_permalink, $content);
+                $updated = true;
+            }
+        }
+
+        if (preg_match_all('/href="([^"]+\.html)"/i', $content, $matches)) {
+            foreach ($matches[1] as $relative_path) {
+                $base_name = basename($relative_path);
+                if (isset($link_map[$base_name])) {
+                    $content = str_replace($relative_path, $link_map[$base_name], $content);
+                    $updated = true;
+                }
+            }
+        }
+
+        if ($updated) {
+            wp_update_post([
+                'ID'           => $p->ID,
+                'post_content' => $content
+            ]);
+            $relink_count++;
+        }
+    }
+
+    set_transient('ntp_success_message', "Link Repair Engine Complete! Processed and repaired cross-references across $relink_count articles.");
+    wp_redirect(admin_url('admin.php?page=notion-importer'));
+    exit;
+}
+
+/**
+ * 2. ADMIN MENU SETUP & STYLING
  */
 add_action('admin_menu', 'ntp_add_admin_menu');
 function ntp_add_admin_menu() {
@@ -63,11 +131,23 @@ function ntp_plugin_page() {
                 <span class="dashicons dashicons-networking" style="color: #46b450; margin-right: 8px; vertical-align: text-bottom;"></span>
                 <strong>Relational Mapping Ledger:</strong> <span style="background:#e7f5ec; color:#2e7d32; padding:2px 8px; border-radius:10px; font-weight:600; font-size:12px;"><?php echo $mapped_count; ?> Nodes Indexed</span> Across Database Runs.
             </div>
-            <form method="post" action="<?php echo admin_url('admin-post.php'); ?>" style="margin:0;" onsubmit="return confirm('Clear the mapping ledger? This breaks cross-ZIP relationship building for future uploads.');">
-                <input type="hidden" name="action" value="ntp_clear_ledger'); ?>">
+            <form method="post" action="<?php echo admin_url('admin-post.php'); ?>" style="margin:0;" onsubmit="return confirm('Clear the mapping ledger?');">
                 <input type="hidden" name="action" value="ntp_clear_ledger">
                 <?php wp_nonce_field('ntp_ledger_clear_action', 'ntp_ledger_nonce'); ?>
                 <input type="submit" class="button button-link-delete" value="Clear Ledger Map" style="color:#d63638; text-decoration:none; font-size:12px;">
+            </form>
+        </div>
+
+        <div style="background: #fff; border: 1px solid #ccd0d4; border-radius: 4px; box-shadow: 0 1px 2px rgba(0,0,0,0.05); padding: 20px; margin-bottom: 25px;">
+            <h3 style="margin-top:0; font-size:16px; font-weight:600; color:#1d2327;">
+                <span class="dashicons dashicons-admin-links" style="vertical-align:text-bottom; color:#2271b1; margin-right:4px;"></span> Cross-ZIP Internal Link Repair Utility
+            </h3>
+            <p style="font-size:13px; color:#646970; margin-bottom:15px;">After uploading all separate Course, Curriculum, Content, and Task archive zip packages, click this utility button. The engine will loop through every document body, locate dead relative <code>.html</code> links, and transform them into live WordPress URLs using the indexing ledger maps.</p>
+            
+            <form method="post" action="<?php echo admin_url('admin-post.php'); ?>" style="margin:0;">
+                <input type="hidden" name="action" value="ntp_execute_relink">
+                <?php wp_nonce_field('ntp_relink_action', 'ntp_relink_nonce'); ?>
+                <input type="submit" class="button button-secondary" value="Execute Global Link Repair Run" <?php echo empty($ledger) ? 'disabled' : ''; ?> style="font-weight:600;">
             </form>
         </div>
 
@@ -76,11 +156,10 @@ function ntp_plugin_page() {
             <?php wp_nonce_field('ntp_upload_action', 'ntp_nonce'); ?>
 
             <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 20px;">
-                
                 <div style="background: #fff; border: 1px solid #dcdcde; border-radius: 4px; box-shadow: 0 1px 2px rgba(0,0,0,0.05); padding: 25px; display: flex; flex-direction: column; justify-content: space-between;">
                     <div>
                         <h2 style="font-size: 18px; font-weight: 600; margin-top: 0; margin-bottom: 15px; padding-bottom: 10px; border-bottom: 1px solid #f0f0f1;">
-                            <span class="dashicons dashicons-cloud-upload" style="margin-right: 6px; vertical-align: text-bottom;"></span> 1. Select Database ZIP
+                            <span class="dashicons dashicons-cloud-upload" style="margin-right: 6px; vertical-align: text-bottom;"></span> 3. Select Database ZIP
                         </h2>
                         
                         <div style="background: #f0f6fc; border: 1px solid #c8d7e1; padding: 15px; border-radius: 4px; margin-bottom: 20px;">
@@ -91,7 +170,6 @@ function ntp_plugin_page() {
                                 <option value="content">Level 3: Content / Lessons (Connects to Curriculum)</option>
                                 <option value="tasks">Level 4: Tasks / Sub-tasks (Connects to Lessons)</option>
                             </select>
-                            <p style="font-size: 11px; color: #646970; margin-top: 6px; margin-bottom: 0;">Match this option to the specific level of your structural learning hierarchy inside your ZIP package.</p>
                         </div>
 
                         <div style="background: #f8f9fa; border: 2px dashed #c3c4c7; padding: 30px 20px; text-align: center; border-radius: 4px; margin-bottom: 10px;">
@@ -109,7 +187,7 @@ function ntp_plugin_page() {
 
                 <div style="background: #fff; border: 1px solid #dcdcde; border-radius: 4px; box-shadow: 0 1px 2px rgba(0,0,0,0.05); padding: 25px;">
                     <h2 style="font-size: 18px; font-weight: 600; margin-top: 0; margin-bottom: 15px; padding-bottom: 10px; border-bottom: 1px solid #f0f0f1;">
-                        <span class="dashicons dashicons-admin-generic" style="margin-right: 6px; vertical-align: text-bottom;"></span> 2. Settings
+                        <span class="dashicons dashicons-admin-generic" style="margin-right: 6px; vertical-align: text-bottom;"></span> 4. Settings
                     </h2>
 
                     <div style="margin-bottom: 20px;">
@@ -145,7 +223,6 @@ function ntp_plugin_page() {
                         </label>
                     </div>
                 </div>
-
             </div>
         </form>
     </div>
@@ -207,7 +284,6 @@ function ntp_handle_upload($options) {
             } elseif (is_file($full_path) && pathinfo($full_path, PATHINFO_EXTENSION) === 'html') {
                 $filename_only = strtolower($item);
                 
-                // Allow tracking of structural files based on level selection
                 if (in_array($filename_only, ['index.html', 'sitemap.html'])) continue;
                 if (strpos($filename_only, 'tasks') !== false && !strpos($filename_only, 'navigation') && $options['migration_level'] !== 'tasks') continue;
                 if (strpos($filename_only, 'content') !== false && $options['migration_level'] !== 'content') continue;
@@ -218,7 +294,7 @@ function ntp_handle_upload($options) {
         }
     }
 
-    if (empty($html_files_to_process)) wp_die("Diagnostic Check Notice: 0 matching structural HTML files found for this migration level selection.");
+    if (empty($html_files_to_process)) wp_die("Diagnostic Check Notice: 0 matching structural HTML files found.");
 
     $count = 0;
     foreach ($html_files_to_process as $file_path) {
@@ -226,13 +302,13 @@ function ntp_handle_upload($options) {
         $count++;
     }
     
-    set_transient('ntp_success_message', "Pipeline Complete! Synthesized $count hierarchy elements into the relational network.");
+    set_transient('ntp_success_message', "Pipeline Complete! Synthesized $count elements into the network ledger.");
     wp_redirect(admin_url('admin.php?page=notion-importer'));
     exit;
 }
 
 /**
- * 4. THE INTER-CONNECTED RELATIONAL PARSER
+ * 4. THE INTER-CONNECTED RELATIONAL PARSER (VERSION 10.1 WITH VIEW EXTRACTION)
  */
 function ntp_process_to_clean_blocks($file_path, $options) {
     $html_content = file_get_contents($file_path);
@@ -245,46 +321,60 @@ function ntp_process_to_clean_blocks($file_path, $options) {
     
     $title_node = $dom->getElementsByTagName('title')->item(0);
     $raw_title = $title_node ? $title_node->nodeValue : basename($file_path, '.html');
-    
-    if ($options['clean_titles']) {
-        $clean_title = trim(preg_replace('/[a-f0-9]{32}/i', '', $raw_title));
-    } else {
-        $clean_title = trim($raw_title);
-    }
+    $clean_title = $options['clean_titles'] ? trim(preg_replace('/[a-f0-9]{32}/i', '', $raw_title)) : trim($raw_title);
 
-    // Extract Property Relation links before deleting properties block
+    // --- STEP 1: PARSE AND EXTRACT THE LINKED DATABASE VIEWS BEFORE DELETING THE TABLE ---
     $relation_notion_keys = [];
-    $property_anchors = $xpath->query('//table[contains(@class, "properties")]//a');
-    foreach ($property_anchors as $anchor) {
-        $href = $anchor->getAttribute('href');
-        if (!empty($href) && strpos($href, '.html') !== false) {
-            $relation_notion_keys[] = rawurldecode(basename($href));
+    $extracted_view_blocks = ""; // Holds HTML references converted to blocks
+
+    $property_rows = $xpath->query('//table[contains(@class, "properties")]//tr');
+    if ($property_rows->length > 0) {
+        $extracted_view_blocks .= "\n<p><strong>Linked Database References:</strong></p>\n\n\n<ul>";
+        $has_links = false;
+
+        foreach ($property_rows as $row) {
+            $anchors = $xpath->query('.//a', $row);
+            foreach ($anchors as $anchor) {
+                $href = $anchor->getAttribute('href');
+                if (!empty($href) && strpos($href, '.html') !== false) {
+                    $decoded_filename = rawurldecode(basename($href));
+                    $relation_notion_keys[] = $decoded_filename;
+                    
+                    // Retain this linked view reference as a Gutenberg content list item
+                    $extracted_view_blocks .= '<li><a href="' . esc_attr($decoded_filename) . '">' . trim($anchor->textContent) . '</a></li>';
+                    $has_links = true;
+                }
+            }
+        }
+        $extracted_view_blocks .= "</ul>\n\n";
+        if (!$has_links) {
+            $extracted_view_blocks = ""; // Wipe placeholder out if no relational view links exist
         }
     }
 
-    // Erase the Properties Table upfront
+    // Now safely erase the old properties table from DOM tree memory
     $properties_tables = $xpath->query('//table[contains(@class, "properties")]');
     foreach ($properties_tables as $tbl) {
         $tbl->parentNode->removeChild($tbl);
     }
 
-    // Contextual Tag Matrix Map Rules
+    // Taxonomy Tags Matrix rules
     $full_body_text = strtolower($dom->textContent);
     $modules_found = [];
     $categories = ['Specific'];
     
-    if (strpos($full_body_text, 'flexbox') !== false || strpos($full_body_text, 'sidebar layout') !== false || strpos($full_body_text, 'card') !== false || strpos($full_body_text, 'clip-path') !== false) $modules_found[] = 'Flexbox';
-    if (strpos($full_body_text, 'php') !== false || strpos($full_body_text, 'syntax') !== false || strpos($full_body_text, 'variables') !== false || strpos($full_body_text, 'conditionals') !== false || strpos($full_body_text, 'loops') !== false || strpos($full_body_text, 'arrays') !== false || strpos($full_body_text, 'functions') !== false || strpos($full_body_text, 'sql') !== false || strpos($full_body_text, 'superglobals') !== false) $modules_found[] = 'PHP';
-    if (strpos($full_body_text, 'animation') !== false || strpos($full_body_text, 'animated') !== false || strpos($full_body_text, 'hover') !== false || strpos($full_body_text, 'transition') !== false) $modules_found[] = 'Advanced Animation';
+    if (strpos($full_body_text, 'flexbox') !== false || strpos($full_body_text, 'sidebar layout') !== false || strpos($full_body_text, 'card') !== false) $modules_found[] = 'Flexbox';
+    if (strpos($full_body_text, 'php') !== false || strpos($full_body_text, 'syntax') !== false || strpos($full_body_text, 'variables') !== false) $modules_found[] = 'PHP';
+    if (strpos($full_body_text, 'animation') !== false || strpos($full_body_text, 'animated') !== false || strpos($full_body_text, 'hover') !== false) $modules_found[] = 'Advanced Animation';
     if (strpos($full_body_text, 'popover') !== false) $modules_found[] = 'Popover API';
-    if (strpos($full_body_text, 'nav') !== false || strpos($full_body_text, 'navigation') !== false || strpos($full_body_text, 'menu') !== false || strpos($full_body_text, 'sliding nav') !== false) $modules_found[] = 'Navigation';
+    if (strpos($full_body_text, 'nav') !== false || strpos($full_body_text, 'navigation') !== false) $modules_found[] = 'Navigation';
 
     $wp_tags = []; $wp_cats = $categories;
     if ($options['taxonomy_mode'] === 'tags') { $wp_tags = $modules_found; }
     elseif ($options['taxonomy_mode'] === 'categories') { $wp_cats = array_merge($wp_cats, $modules_found); }
     elseif ($options['taxonomy_mode'] === 'both') { $wp_tags = $modules_found; $wp_cats = array_merge($wp_cats, $modules_found); }
 
-    // Global Media Processing
+    // Media Processing
     $featured_image_id = null;
     if (!$options['skip_media']) {
         $media_elements = $xpath->query('//img | //video | //div[@class="source"]/a');
@@ -301,11 +391,16 @@ function ntp_process_to_clean_blocks($file_path, $options) {
         }
     }
 
-    // Global Block Layout Builder
+    // Core content layout sweep
     $content_blocks = $xpath->query('//body//h1 | //body//h2 | //body//h3 | //body//h4 | //body//p | //body//ul | //body//ol | //body//blockquote | //body//pre | //body//figure');
     
     $block_output = '';
     $first_h1_ignored = false;
+
+    // STEP 2: Prepend the extracted linked views directly to the top of our block output cache!
+    if (!empty($extracted_view_blocks)) {
+        $block_output .= $extracted_view_blocks;
+    }
 
     foreach ($content_blocks as $block) {
         if ($xpath->query('ancestor::h1 | ancestor::h2 | ancestor::h3 | ancestor::h4 | ancestor::p | ancestor::ul | ancestor::ol | ancestor::blockquote | ancestor::pre', $block)->length > 0) continue;
@@ -333,7 +428,7 @@ function ntp_process_to_clean_blocks($file_path, $options) {
                 $block_output .= "\n<h$level>" . strip_tags($clean_inner, '<b><i><strong><em><a><code>') . "</h$level>\n\n";
                 break;
             case 'blockquote':
-                $block_output .= "\n<blockquote class=\"wp-block-quote\"><p>" . strip_tags($clean_inner, '<b><i>Original_File.html') . "</p></blockquote>\n\n";
+                $block_output .= "\n<blockquote class=\"wp-block-quote\"><p>" . strip_tags($clean_inner, '<b><i><strong><em><a>') . "</p></blockquote>\n\n";
                 break;
             case 'pre':
                 $code_content = strip_tags($inner_html);
@@ -341,8 +436,6 @@ function ntp_process_to_clean_blocks($file_path, $options) {
                 if (strpos($code_content, '<?php') !== false || strpos($code_content, 'wp_') !== false) { $lang = 'php'; }
                 elseif (strpos($code_content, 'const ') !== false || strpos($code_content, 'document.get') !== false) { $lang = 'javascript'; }
                 elseif (strpos($code_content, '<html') !== false || strpos($code_content, '</div>') !== false) { $lang = 'html'; }
-                elseif (strpos($code_content, 'body {') !== false || strpos($code_content, 'margin:') !== false) { $lang = 'css'; }
-
                 $block_output .= "\n<pre class=\"wp-block-code\"><code class=\"language-$lang\">" . htmlspecialchars($code_content) . "</code></pre>\n\n";
                 break;
             case 'ul': case 'ol':
@@ -372,9 +465,7 @@ function ntp_process_to_clean_blocks($file_path, $options) {
         }
     }
 
-    if (empty(trim($block_output))) $block_output = "\n<p>Workspace content compiled successfully.</p>\n";
-
-    // --- INFINITE ANCESTRAL LEDGER LOOKUP ---
+    // --- ANCESTRAL LINEAGE CHECKS ---
     $ledger = get_option('_ntp_relational_ledger', []);
     $target_parent_id = 0;
 
@@ -400,7 +491,6 @@ function ntp_process_to_clean_blocks($file_path, $options) {
         'post_author'  => $current_user_id,
     ];
 
-    // Nest under the found parent post ID natively
     if ($target_parent_id > 0) {
         $post_args['post_parent'] = $target_parent_id;
     }
@@ -412,7 +502,6 @@ function ntp_process_to_clean_blocks($file_path, $options) {
         if (!empty($wp_cats)) wp_set_object_terms($post_id, $wp_cats, 'category');
         if (!empty($wp_tags)) wp_set_object_terms($post_id, $wp_tags, 'post_tag');
 
-        // Map both clean and raw filename references into ledger cache
         $original_filename_key = basename($file_path);
         $ledger[$original_filename_key] = $post_id;
         $ledger[rawurlencode($original_filename_key)] = $post_id;
